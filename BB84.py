@@ -1,5 +1,7 @@
 # I'm going to keep the module as a single BB84.py file for now
 # I'll organize it after I'm done prototyping
+# TODO: split file
+# TODO: add GPL boilerplate
 
 from random import uniform
 from math import floor
@@ -134,6 +136,7 @@ class Client(object):
 
         # test if sifted keys match
         # to prevent attacks, post random test indices
+        # TODO: implement this check
 
     def encrypt(self, text):
         # simple one-time-pad
