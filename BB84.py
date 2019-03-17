@@ -3,7 +3,7 @@
 # TODO: split file
 # TODO: add GPL boilerplate
 
-from random import uniform
+from random import uniform, sample
 from math import floor
 
 class Qubit(object):
@@ -52,9 +52,9 @@ class Server(object):
         basis = ''.join(basis)
         self.stack += [Message(sender, recipient, basis, 'Basis')]
 
-    def post_sifted_key(self, sender, recipient, sifted_key):
-        key = ''.join(sifted_key)
-        self.stack += [Message(sender, recipient, key, 'Key')]
+    def post_sifted_key(self, sender, recipient, index, bits):
+        sifted_str = '%s::%s' % (':'.join([str(i) for i in index]), bits)
+        self.stack += [Message(sender, recipient, sifted_str, 'Key')]
 
     def filter_msgs(self, sender=None, recipient=None, msg_type=None):
         ret = self.stack
@@ -118,6 +118,25 @@ class Client(object):
             self.encrypting_key = key[key_len:2*key_len]
             self.decrypting_key = key[:key_len]
 
+    def sift_encrypting_key(self, target, sift_len):
+        index = sample(range(len(self.encrypting_key)), sift_len)
+        sifted_key = ''.join([str(self.encrypting_key[i]) for i in index])
+        self.server.post_sifted_key(self.name, target, index, sifted_key)
+        remaining_key = filter(lambda k: k[0] not in index,
+                               enumerate(self.encrypting_key))
+        self.encrypting_key = list(map(lambda k: k[1], remaining_key))
+
+    def confirm_sifted_key(self, sender):
+        keystring = self.server.filter_msgs(sender=sender, recipient=self.name,
+                                            msg_type='Key')[-1]
+        index, key = keystring.text.split('::')
+        secure = all([int(k) is self.decrypting_key[int(i)]
+                      for i, k in zip(index.split(':'), list(key))])
+        filtered_key = filter(lambda k: str(k[0]) not in index.split(':'),
+                              enumerate(self.decrypting_key))
+        self.decrypting_key = list(map(lambda k: k[1], filtered_key))
+        return secure
+
     def ascii_bitwise_xor(self, key, string):
         bits = list(map(int, list(string)))
         return ''.join([str(a ^ b) for a, b in zip(bits, key)])
@@ -136,7 +155,11 @@ class Client(object):
 
         # test if sifted keys match
         # to prevent attacks, post random test indices
-        # TODO: implement this check
+        # TODO: try another handshake if this one failed (insufficient bits)
+        self.sift_encrypting_key(target.name, sift_len)
+        target.sift_encrypting_key(self.name, sift_len)
+        return all([target.confirm_sifted_key(self.name),
+                    self.confirm_sifted_key(target.name)])
 
     def encrypt(self, text):
         # simple one-time-pad

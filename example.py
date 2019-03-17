@@ -10,7 +10,10 @@ Bob = BB84.Client('Bob')
 
 Alice.connect(server)
 Bob.connect(server)
-Alice.handshake(Bob)
+if Alice.handshake(Bob):
+    print('Secure connection established')
+else:
+    print('Connection failed')
 
 # now that they are connected, we can chat
 print(Bob.decrypt(Alice.encrypt('Hello!')))
