@@ -18,7 +18,7 @@ class TestQubit(unittest.TestCase):
             Qubit(zero=1+1j, one=1+1j)
 
     def test_randomization(self):
-        # applying a Hadamard randomizes the qubit
+        # applying a Hadamard puts the qubit into a superposition state
         q = Qubit().gate(Gates.H)
         self.cmp_states(q.state, np.array([1, 1]) * np.sqrt(0.5))
 
@@ -32,10 +32,9 @@ class TestQubit(unittest.TestCase):
 
     def test_measure_H(self):
         # measuring after Hadamard yields +1/-1 with 0.5 probability
-        q = Qubit().gate(Gates.H)
         ones = 0
         for _ in range(100):
-            val, vect = q.measure(Bases.Z)
+            val, vect = Qubit().gate(Gates.H).measure(Bases.Z)
             try:
                 self.assertTrue(np.isclose(val, 1))
                 self.cmp_states(vect.state, Qubit().state)
@@ -47,10 +46,9 @@ class TestQubit(unittest.TestCase):
 
     def test_measure_X(self):
         # measuring in X basis yields +1/-1 with 0.5 probability
-        q = Qubit()
         ones = 0
         for _ in range(100):
-            val, vect = q.measure(Bases.X)
+            val, vect = Qubit().measure(Bases.X)
             try:
                 self.assertTrue(np.isclose(val, 1))
                 self.cmp_states(vect.state, np.array([1, 1]) / np.sqrt(2))
@@ -60,6 +58,29 @@ class TestQubit(unittest.TestCase):
                 # not sure how to foce numpy to choose the [1, -1] eigenvector
                 self.cmp_states(vect.state, np.array([-1, 1]) / np.sqrt(2))
         self.assertTrue(40 <= ones <= 60)
+
+    def test_measure_H_X(self):
+        # applying H then measuring in X yields +1 each time
+        for _ in range(100):
+            val, _ = Qubit().gate(Gates.H).measure(Bases.X)
+            self.assertTrue(np.isclose(val, 1))
+
+    def test_apply_H_H(self):
+        # two Hadamard gates cancel
+        q = Qubit().gate(Gates.H).gate(Gates.H)
+        self.cmp_states(q.state, Qubit().state)
+
+    def test_invalid_gate(self):
+        # a non-unitary gate should fail
+        G = np.array([[1, 2], [3, 4]])
+        with self.assertRaises(ValueError):
+            Qubit().gate(G)
+
+    def test_invalid_measure(self):
+        # a non-Hermitian measurement should fail
+        M = np.array([[1j, 3], [-3, 1+4j]])
+        with self.assertRaises(ValueError):
+            Qubit().measure(M)
 
 if __name__ == '__main__':
     unittest.main()
