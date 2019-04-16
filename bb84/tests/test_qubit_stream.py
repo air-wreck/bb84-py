@@ -9,12 +9,12 @@ import numpy as np
 from bb84.qubit import QubitStream
 
 class TestQubitStream(unittest.TestCase):
-    def start_test_server(self, client_A, client_B, return_list, init_flag):
+    def start_test_server(self, return_list, init_flag):
         # starts a test server for the given client addresses
         # to find a free port, we let the OS choose one and return
         # it in return_list, C-style
         server = ('localhost', 0)
-        stream = QubitStream(server, client_A, client_B)
+        stream = QubitStream(server, 0, 1)  # dummy id numbers
         return_list[0] = stream.socket.getsockname()[1]
         return_list[1] = stream
 
@@ -29,8 +29,7 @@ class TestQubitStream(unittest.TestCase):
             server_info = [0, None]
             server_init_flag = threading.Event()
             threading.Thread(target=self.start_test_server,
-                             args=(dummy, dummy, server_info,
-                                   server_init_flag)).start()
+                             args=(server_info, server_init_flag)).start()
 
             server_init_flag.wait()
             sock.connect(('localhost', server_info[0]))
@@ -42,6 +41,4 @@ class TestQubitStream(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
 

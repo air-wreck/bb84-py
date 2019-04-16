@@ -110,6 +110,8 @@ class QubitRequestHandler(socketserver.BaseRequestHandler):
 
         # do a SEND: we prepare N qubits in the appropriate basis
         # in the target mailbox
+        # TODO: this should then return the measurement of the qubits in the
+        #       sending basis, possibly along with N for integrity check
         if command[0] ==  'SEND':
             if self.sending_party == 'A':
                 target_mbox = self.server.mailbox_B
@@ -144,10 +146,21 @@ class QubitRequestHandler(socketserver.BaseRequestHandler):
 
 class QubitStream(socketserver.TCPServer):
     # a simulated secure stream of qubits between parties A and B
-    def __init__(self, self_addr, client_A_addr, client_B_addr):
+    def __init__(self, self_addr, client_A_id, client_B_id):
         super(QubitStream, self).__init__(self_addr, QubitRequestHandler)
-        self.client_A_addr = client_A_addr
-        self.client_B_addr = client_B_addr
+        self.client_A_id = client_A_id
+        self.client_B_id = client_B_id
+        self.client_A_addr = ('localhost', 0)
+        self.client_B_addr = ('localhost', 0)
 
         self.mailbox_A = []
         self.mailbox_B = []
+
+    def attach_user_address(self, client_id, client_addr):
+        if client_id == self.client_A_id:
+            self.client_A_addr = client_addr
+        elif client_id == self.client_B_id:
+            self.client_B_addr = client_addr
+        else:
+            raise ValueError('Unrecognized client ID [%d]' % client_id)
+
