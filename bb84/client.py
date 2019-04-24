@@ -19,6 +19,8 @@ class Client(object):
         self.name = name
         self.id_no = id_no
 
+        # TODO: we need to construct self.server TCP server to receive
+        #       messages from other users
         self.connections = {}
 
     def connect(self, qubit_stream, target_id, target_addr):
@@ -28,10 +30,8 @@ class Client(object):
 
         # attach this address to the qubit stream
         qubit_stream.attach_user_address(self.id_no, sock.getsockname())
-        self.connections[str(target_id)] = Connection(
-            target_addr,
-            qubit_stream,
-            sock)
+        conn = Connection(target_addr, qubit_stream, sock)
+        self.connections[str(target_id)] = conn
 
     def send_qubits(self, basis_str, target_id):
         # sends qubits prepared in the specified basis to the target
@@ -39,8 +39,10 @@ class Client(object):
         sock = self.connections[str(target_id)].socket
         sock.sendall(bytes('SEND %d %s' % (len(basis_str), basis_str),
                            'utf-8'))
-        reply = str(sock.recv(1024).strip(), 'utf-8')
-        if reply == 'SEND OK':
+        reply = sock.recv(1024).strip().decode('utf-8')
+        if reply[:7] == 'SEND OK':
+            # TODO: store the results of the measurements somewhere,
+            #       probably in the connection object
             return len(basis_str)
         return -1
 

@@ -1,10 +1,11 @@
 ### qubit.py ###
 #
 # This file implements a simulated qubit with enough functionality for
-# our protocol.
+# our protocol. Actually, the qubit functionality is probably overkill.
 
 import numpy as np
 import socketserver
+import threading
 
 
 ### single-qubit operations ###
@@ -28,7 +29,7 @@ class Qubit(object):
 
         # check that probabilities are normalized
         if not np.isclose(np.linalg.norm(self.state), 1, atol=tolerance):
-            raise ValueError('Qubit probabilities were not normalized')
+            raise ValueError('Qubit probabilities must be normalized')
 
     def gate(self, unitary):
         # check that the gate is unitary
@@ -110,16 +111,27 @@ class QubitRequestHandler(socketserver.BaseRequestHandler):
 
         # do a SEND: we prepare N qubits in the appropriate basis
         # in the target mailbox
-        # TODO: this should then return the measurement of the qubits in the
-        #       sending basis, possibly along with N for integrity check
+        # the results of measuring the qubits in the same basis are returned
+        # this is guaranteed to give the true value of the qubits
         if command[0] ==  'SEND':
             if self.sending_party == 'A':
                 target_mbox = self.server.mailbox_B
             else:
                 target_mbox = self.server.mailbox_A
-            target_mbox += [Qubit() if b is 'Z' else Qubit().gate(Gates.H)
-                            for b in basis]
-            self.request.sendall(bytes('SEND OK', 'utf-8'))
+            results = []
+            for b in basis:
+                q = Qubit()
+                if b == 'Z':
+                    target_mbox += [np.random.choice([q, q.gate(Gates.X)])]
+                    m, _ = target_mbox[-1].measure(Bases.Z)
+                    results += ['0' if m == 1 else '1']
+                else:
+                    q = q.gate(Gates.H)
+                    target_mbox += [np.random.choice([q, q.gate(Gates.Z)])]
+                    m, _ = target_mbox[-1].measure(Bases.X)
+                    results += ['0' if m == 1 else '1']
+            self.request.sendall(bytes('SEND OK: %s\n' % ''.join(results),
+                                       'utf-8'))
             return
 
         # do a MEASURE: we give the results of measuring N qubits
@@ -142,10 +154,13 @@ class QubitRequestHandler(socketserver.BaseRequestHandler):
             else:
                 m, _ = qubits_to_measure[i].measure(Bases.X)
             results += ['0' if m is 1 else '1']
-        self.request.sendall(bytes('MEASURE OK: %s\n' % ''.join(results), 'utf-8'))
+        self.request.sendall(bytes('MEASURE OK: %s\n' % ''.join(results),
+                                   'utf-8'))
 
 class QubitStream(socketserver.TCPServer):
     # a simulated secure stream of qubits between parties A and B
+    # TODO: make this multithreaded, so both clients can send/measure
+    #       to simplify things, channel requests will probably be blocking
     def __init__(self, self_addr, client_A_id, client_B_id):
         super(QubitStream, self).__init__(self_addr, QubitRequestHandler)
         self.client_A_id = client_A_id
@@ -157,10 +172,34 @@ class QubitStream(socketserver.TCPServer):
         self.mailbox_B = []
 
     def attach_user_address(self, client_id, client_addr):
+        # update the appropriate client address
         if client_id == self.client_A_id:
             self.client_A_addr = client_addr
         elif client_id == self.client_B_id:
             self.client_B_addr = client_addr
         else:
             raise ValueError('Unrecognized client ID [%d]' % client_id)
+
+def make_qubit_stream(client_A_id, client_B_id, server_addr=('localhost', 0)):
+    # wrapper to make a new qubit stream server
+    # returns the QubitStream instance created
+
+    def start_stream_server(client_A_id, client_B_id, server_addr,
+                            return_list, ready_flag):
+        # start another qubit stream server
+        # we return the server instance in return_list[0], C-style
+        # we will set ready_flag when the server is running
+        stream = QubitStream(server_addr, client_A_id, client_B_id)
+        return_list[0] = stream
+
+        ready_flag.set()
+        stream.serve_forever()
+
+    server_info = [None]
+    server_init_flag = threading.Event()
+    threading.Thread(target=start_stream_server,
+                     args=(client_A_id, client_B_id, server_addr,
+                           server_info, server_init_flag)).start()
+    server_init_flag.wait()
+    return server_info[0]
 
