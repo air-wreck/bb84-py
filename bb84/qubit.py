@@ -4,11 +4,6 @@
 # our protocol. Actually, the qubit functionality is probably overkill.
 
 import numpy as np
-import socketserver
-import threading
-
-
-### single-qubit operations ###
 
 class Bases(object):
     # contains some common bases for convenience
