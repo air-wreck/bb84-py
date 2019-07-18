@@ -4,5 +4,5 @@ alice_address = ('localhost', 65423)
 bob_address = ('localhost', 56432)
 
 alice = Client(alice_address, bob_address)
-alice.send(350)
+alice.send_k(250, out='tmp_key.txt', mode='a')
 

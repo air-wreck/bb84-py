@@ -7,6 +7,7 @@ from bb84.qubit import Qubit, Bases, Gates
 import socket
 import numpy as np
 import secrets
+import sys
 
 class Client(object):
     # constructor arguments:
@@ -14,10 +15,25 @@ class Client(object):
     #   other_addr: ('hostname', port) tuple for intended recipient
     #   n_cmp: number of bytes to use in key comparison step
     #          more bytes is more secure, but also less efficient
-    def __init__(self, own_addr, other_addr, n_cmp=4):
+    #   send_q_n: default number of qubits to send at once
+    #   block: default block size for TCP requests
+    #   verbosity: number [0..1], with 0 totally quiet and 1 very verbose
+    #   file: place to print output (by default stdout)
+    def __init__(self, own_addr, other_addr, n_cmp=4,
+                 send_q_n=350, block=4096, verbosity=0.2, file=sys.stdout):
         self.own_host, self.own_port = own_addr
         self.other_host, self.other_port = other_addr
         self.n_cmp = n_cmp
+        self.send_q_n = send_q_n
+        self.block = block
+        self.verbosity = verbosity
+        self.file = file
+
+    # print a message
+    # consider switching to standard logging module?
+    def print(self, message, v=0.1, **kwargs):
+        if v <= self.verbosity:
+            print(message, file=self.file, **kwargs)
 
     # prepare 'n' qubits for sending
     # returns utf-8 representations of (bases, qubits)
@@ -50,23 +66,23 @@ class Client(object):
     # send utf-8 through a socket and check integrity
     # this assumes the target is relaying the original message
     def check_send(self, sock, message, name='message'):
-        print('Sending %s...' % name, end=' ')
+        self.print('Sending %s...' % name, v=0.2, end=' ')
         sock.sendall(message)
-        response = sock.recv(4096).decode('utf-8')
+        response = sock.recv(self.block).decode('utf-8')
         if message.decode('utf-8') == response:
-            print('ok')
+            self.print('ok', v=0.2)
             sock.sendall(bytes('ok', 'utf-8'))
         else:
-            print('Error: response integrity')
-            print('Message was: %s' % message.decode('utf-8'))
-            print('Response was: %s' % response)
+            self.print('Error: response integrity', v=0.1)
+            self.print('Message was: %s' % message.decode('utf-8'), v=0.5)
+            self.print('Response was: %s' % response, v=0.5)
 
     # receive a message and relay back the original bytes as confirmation
-    def check_recv(self, conn, size=4096):
-        data = conn.recv(size)
+    def check_recv(self, conn):
+        data = conn.recv(self.block)
         conn.sendall(data)
-        if conn.recv(size).decode('utf-8') != 'ok':
-            print('Error: client reported message integrity error')
+        if conn.recv(self.block).decode('utf-8') != 'ok':
+            self.print('Error: client reported message integrity error', v=0.1)
         return data
 
     # reconstruct qubit objects from the simulated stream
@@ -115,18 +131,36 @@ class Client(object):
     # TODO: add more refined statistics to this
     def key_cmp(self, key1, key2):
         if key1 == key2:
-            print('Confirmed subkey match. Connection is secure.')
+            self.print('Confirmed subkey match. Connection is secure.', v=0.2)
             return True
         else:
-            print('WARNING: subkeys do not match. Connection compromised.')
+            self.print('WARNING: subkeys do not match.', v=0.1)
+            self.print('WARNING: connection may be compromised.', v=0.1)
             return False
+
+    def write_key_to_file(self, key, filename, mode):
+        file = open(filename, mode)
+        file.write(key)
+        file.close()
 
     ###########
     # SENDING #
     ###########
 
-    # ultimate send routine
-    def send(self, n):
+    def accept_connection(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind((self.own_host, self.own_port))
+        self.print('Listening for connections on %s:%d' %
+                   (self.own_host, self.own_port), v=0.5)
+        sock.listen()
+        conn, addr = sock.accept()
+        self.print('Connection from %s:%d' % addr, v=0.5)
+        return sock, conn, addr
+
+    # qubit-based send routine
+    #   n: the number of qubits to send
+    #   sock: the TCP socket to the target
+    def send_q(self, n, sock):
         # prepare and measure the qubits
         # in this simulation, we essentially clone and measure upfront
         # in reality, we can still measure here, since measuring in the
@@ -134,70 +168,114 @@ class Client(object):
         bstr, qstr = self.prepare(n)
         qubits = self.reconstruct(qstr.decode('utf-8'))
 
-        # open the connection to the target
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            print('Connecting to %s:%d' % (self.other_host, self.other_port))
-            s.connect((self.other_host, self.other_port))
+        # send the qubits
+        self.check_send(sock, qstr, 'qubits')
 
-            # send the qubits
-            self.check_send(s, qstr, 'qubits')
+        # receive the target's basis string
+        target_bstr = self.check_recv(sock)
 
-            # receive the target's basis string
-            target_bstr = self.check_recv(s)
+        # send our own basis string
+        self.check_send(sock, bstr, 'bases')
 
-            # send our own basis string
-            self.check_send(s, bstr, 'bases')
+        # receive the target's generated key
+        target_subkey = self.check_recv(sock).decode('utf-8')
 
-            # receive the target's generated key
-            target_subkey = self.check_recv(s).decode('utf-8')
+        # measure qubits and combine to form our own final key
+        # send the appropriate subkey to the target
+        measure = self.measure(qubits, bstr.decode('utf-8'))
+        key, subkey = self.filter_key(measure, bstr, target_bstr)
+        self.print('Generated key: %s' % key, v=0.3)
+        self.check_send(sock, bytes(subkey, 'utf-8'), 'subkey')
+        self.key_cmp(subkey, target_subkey)
 
-            # measure qubits and combine to form our own final key
-            # send the appropriate subkey to the target
-            measure = self.measure(qubits, bstr.decode('utf-8'))
-            key, subkey = self.filter_key(measure, bstr, target_bstr)
-            print('Generated key: %s' % key)
-            self.check_send(s, bytes(subkey, 'utf-8'), 'subkey')
-            self.key_cmp(subkey, target_subkey)
+        return key
 
+    # key-based send routine
+    #   n: the total length of the key, in bytes
+    #   out: if not None, file name to write output (TODO)
+    #   mode: 'w' or 'a' (write or append to file)
+    def send_k(self, n, out=None, mode='w'):
+        # since the protocol is non-deterministic, there is no way to
+        # pre-compute the correct number of qubit blocks to send
+        # we will have to keep on sending until our final key is long enough
+        key = ''
+        n *= 2  # we're using two characters per byte
+
+        # establish connection with target party
+        # build up key until full
+        # TODO: more robust networking in case connection drops
+        sock, conn, addr = self.accept_connection()
+        while len(key) < n:
+            key += self.send_q(self.send_q_n, conn)
+            key += self.receive_q(conn)
+        conn.close()
+        sock.close()
+        key = key[:n]
+        self.print('Generated final key: %s' % key, v=0.1)
+        self.print('Final key has length %d bytes' % (len(key) / 2), v=0.3)
+
+        # write key to file if requested and return key
+        if not out is None:
+            self.write_key_to_file(key, out, mode)
         return key
 
     #############
     # RECEIVING #
     #############
 
-    # ultimate receive routine
-    def receive(self):
-        # wait for connection from sender
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((self.own_host, self.own_port))
-            print('Listening for connections on %s:%d' % (self.own_host,
-                                                          self.own_port))
-            s.listen()
-            conn, addr = s.accept()
-            print('Connection from %s:%d' % addr)
+    def request_connection(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.print('Connecting to %s:%d' %
+                   (self.other_host, self.other_port), v=0.5)
+        sock.connect((self.other_host, self.other_port))
+        return sock
 
-            # receive and decode qubits from sender
-            qstr = self.check_recv(conn)
-            qubits = self.reconstruct(qstr.decode('utf-8'))
+    # qubit-based receive routine
+    def receive_q(self, conn):
+        # receive and decode qubits from sender
+        qstr = self.check_recv(conn)
+        qubits = self.reconstruct(qstr.decode('utf-8'))
 
-            # generate our own basis string and return it to sender
-            bstr, _ = self.prepare(len(qubits))
-            self.check_send(conn, bstr, 'bases')
+        # generate our own basis string and return it to sender
+        bstr, _ = self.prepare(len(qubits))
+        self.check_send(conn, bstr, 'bases')
 
-            # receive the original party's basis string
-            target_bstr = self.check_recv(conn)
+        # receive the original party's basis string
+        target_bstr = self.check_recv(conn)
 
-            # measure qubits and discard appropriate bits for final key
-            # send the first n_cmp bytes to original sender
-            measure = self.measure(qubits, bstr.decode('utf-8'))
-            key, subkey = self.filter_key(measure, bstr, target_bstr)
-            print('Generated key: %s' % key)
-            self.check_send(conn, bytes(subkey, 'utf-8'), 'subkey')
+        # measure qubits and discard appropriate bits for final key
+        # send the first n_cmp bytes to original sender
+        measure = self.measure(qubits, bstr.decode('utf-8'))
+        key, subkey = self.filter_key(measure, bstr, target_bstr)
+        self.print('Generated key: %s' % key, v=0.3)
+        self.check_send(conn, bytes(subkey, 'utf-8'), 'subkey')
 
-            # confirm the generated key from the original sender
-            target_subkey = self.check_recv(conn).decode('utf-8')
-            self.key_cmp(subkey, target_subkey)
+        # confirm the generated key from the original sender
+        target_subkey = self.check_recv(conn).decode('utf-8')
+        self.key_cmp(subkey, target_subkey)
 
-            conn.close()
+        return key
+
+    # key-based receive routine
+    #   n: total length of key
+    #   out: None or name of file to write output (TODO)
+    #   mode: 'w' or 'a' (write or append to file)
+    def receive_k(self, n, out=None, mode='w'):
+        key = ''
+        n *= 2  # two characters to represent each bit
+
+        # connect to client and do the key exchange
+        sock = self.request_connection()
+        while len(key) < n:
+            key += self.receive_q(sock)
+            key += self.send_q(self.send_q_n, sock)
+        sock.close()  # unnecessary if client does it?
+        key = key[:n]
+        self.print('Generated final key: %s' % key, v=0.1)
+        self.print('Final key has length %d bytes' % (len(key) / 2), v=0.3)
+
+        # write key to file if requested and return key
+        if not out is None:
+            self.write_key_to_file(key, out, mode)
         return key
 
