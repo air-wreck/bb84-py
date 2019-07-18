@@ -6,27 +6,34 @@
 from bb84.qubit import Qubit, Bases, Gates
 import socket
 import numpy as np
+import secrets
 
 class Client(object):
-    def __init__(self, own_addr, other_addr):
+    # constructor arguments:
+    #   own_addr: ('hostname', port) tuple for this client
+    #   other_addr: ('hostname', port) tuple for intended recipient
+    #   n_cmp: number of bytes to use in key comparison step
+    #          more bytes is more secure, but also less efficient
+    def __init__(self, own_addr, other_addr, n_cmp=4):
         self.own_host, self.own_port = own_addr
         self.other_host, self.other_port = other_addr
+        self.n_cmp = n_cmp
 
-    # prepares 'n' qubits for sending
+    # prepare 'n' qubits for sending
     # returns utf-8 representations of (bases, qubits)
     def prepare(self, n):
         # randomly decide 'n' bases, each either X or Z
-        bases = [np.random.choice(['X', 'Z']) for _ in range(n)]
+        bases = [secrets.choice(['X', 'Z']) for _ in range(n)]
 
-        # prepare a 'n' qubits in those bases
+        # prepare 'n' qubits in those bases
         qubits = []
         for b in bases:
             q = Qubit()
             if b == 'Z':  # prepare in computational basis
-                qubits += [np.random.choice([q, q.gate(Gates.X)])]
+                qubits += [secrets.choice([q, q.gate(Gates.X)])]
             else:  # prepare in superposition basis
                 q = q.gate(Gates.H)
-                qubits += [np.random.choice([q, q.gate(Gates.Z)])]
+                qubits += [secrets.choice([q, q.gate(Gates.Z)])]
 
         # utf-8 representation of bases
         bstr = bytes(''.join(bases), 'utf-8')
@@ -83,6 +90,7 @@ class Client(object):
         return measures
 
     # filter a key based on two basis strings
+    # returns (key, subkey) as hex strings, where subkey is used for comparison
     def filter_key(self, key, b1, b2):
         # filter out the useless bits
         b1 = b1.decode('utf-8')
@@ -90,12 +98,28 @@ class Client(object):
         key = filter(lambda x: x[1] == x[2], zip(key, b1, b2))
         key = ''.join([k for k, _, _ in key])
 
-        # convert the string to bits into hex
+        # convert the string from bits into hex
         # we'll discard any leftover bits at the end
         hex_key = ''
         for i in range(int(len(key) / 8)):
             hex_key += '%x' % int(key[i:i+8], 2)
-        return hex_key
+
+        # split the key into subkeys
+        if len(hex_key) <= self.n_cmp * 2:
+            raise Exception("Generated key too short")
+        subkey = hex_key[:self.n_cmp * 2]
+        final_key = hex_key[self.n_cmp * 2:]
+        return final_key, subkey
+
+    # compare two keys, both represented as hex strings
+    # TODO: add more refined statistics to this
+    def key_cmp(self, key1, key2):
+        if key1 == key2:
+            print('Confirmed subkey match. Connection is secure.')
+            return True
+        else:
+            print('WARNING: subkeys do not match. Connection compromised.')
+            return False
 
     ###########
     # SENDING #
@@ -105,7 +129,7 @@ class Client(object):
     def send(self, n):
         # prepare and measure the qubits
         # in this simulation, we essentially clone and measure upfront
-        # in reality, we can still measure here, since mearuing in the
+        # in reality, we can still measure here, since measuring in the
         # correct basis will not change the qubit state
         bstr, qstr = self.prepare(n)
         qubits = self.reconstruct(qstr.decode('utf-8'))
@@ -124,10 +148,18 @@ class Client(object):
             # send our own basis string
             self.check_send(s, bstr, 'bases')
 
-            # measure qubits and combine to form final key
+            # receive the target's generated key
+            target_subkey = self.check_recv(s).decode('utf-8')
+
+            # measure qubits and combine to form our own final key
+            # send the appropriate subkey to the target
             measure = self.measure(qubits, bstr.decode('utf-8'))
-            key = self.filter_key(measure, bstr, target_bstr)
-            print(key)
+            key, subkey = self.filter_key(measure, bstr, target_bstr)
+            print('Generated key: %s' % key)
+            self.check_send(s, bytes(subkey, 'utf-8'), 'subkey')
+            self.key_cmp(subkey, target_subkey)
+
+        return key
 
     #############
     # RECEIVING #
@@ -156,8 +188,16 @@ class Client(object):
             target_bstr = self.check_recv(conn)
 
             # measure qubits and discard appropriate bits for final key
+            # send the first n_cmp bytes to original sender
             measure = self.measure(qubits, bstr.decode('utf-8'))
-            key = self.filter_key(measure, bstr, target_bstr)
-            print(key)
+            key, subkey = self.filter_key(measure, bstr, target_bstr)
+            print('Generated key: %s' % key)
+            self.check_send(conn, bytes(subkey, 'utf-8'), 'subkey')
+
+            # confirm the generated key from the original sender
+            target_subkey = self.check_recv(conn).decode('utf-8')
+            self.key_cmp(subkey, target_subkey)
 
             conn.close()
+        return key
+

@@ -4,6 +4,7 @@
 # our protocol. Actually, the qubit functionality is probably overkill.
 
 import numpy as np
+import secrets
 
 class Bases(object):
     # contains some common bases for convenience
@@ -46,7 +47,11 @@ class Qubit(object):
         # perform a projective measurement with the given Hermitian
         e_val, e_vect = np.linalg.eig(observable)
         p = list(map(lambda v: abs(v) ** 2, np.matmul(e_vect.T, self.state)))
-        i = np.random.choice(len(e_val), p=p)
+        if not np.isclose(sum(p), 1):
+            raise ValueError('Probabilities do not sum to 1')
+        rand = secrets.SystemRandom().random()
+        pcum = enumerate(np.cumsum(p))
+        i = next((n[0] for n in pcum if n[1] > rand), len(p) - 1)
 
         # place into state e_vect[i], normalized by the inner product p[i]
         outstate = e_vect.T[i] / np.linalg.norm(e_vect.T[i])
